@@ -41,7 +41,7 @@ jobs:
 
   TestCilium:
     needs: SetPatternfile
-    uses: meshery/meshery/.github/workflows/testadapters.yaml@master
+    uses: gr455/meshery/.github/workflows/testadapters.yaml@gh-actions-timeout
     with:
       expected_pods: cilium, cilium-operator, cilium-operator
       expected_pods_namespaces: kube-system, kube-system, kube-system
