@@ -16,13 +16,14 @@ package cilium
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/layer5io/meshery-adapter-library/adapter"
 	"github.com/layer5io/meshery-adapter-library/status"
 	mesherykube "github.com/layer5io/meshkit/utils/kubernetes"
 )
 
-func (h *Handler) installCilium(del bool, version, ns string) (string, error) {
+func (h *Handler) installCilium(del bool, version, ns string, kubeconfigs []string) (string, error) {
 	h.Log.Debug(fmt.Sprintf("Requested install of version: %s", version))
 	h.Log.Debug(fmt.Sprintf("Requested action is delete: %v", del))
 	h.Log.Debug(fmt.Sprintf("Requested action is in namespace: %s", ns))
@@ -38,7 +39,7 @@ func (h *Handler) installCilium(del bool, version, ns string) (string, error) {
 	}
 
 	h.Log.Info("Installing...")
-	err = h.applyHelmChart(del, version, ns)
+	err = h.applyHelmChart(del, version, ns, kubeconfigs)
 	if err != nil {
 		return st, ErrApplyHelmChart(err)
 	}
@@ -51,9 +52,7 @@ func (h *Handler) installCilium(del bool, version, ns string) (string, error) {
 	return st, nil
 }
 
-func (h *Handler) applyHelmChart(del bool, version, namespace string) error {
-	kClient := h.MesheryKubeclient
-
+func (h *Handler) applyHelmChart(del bool, version, namespace string, kubeconfigs []string) error {
 	repo := "https://helm.cilium.io/"
 	chart := "cilium"
 	var act mesherykube.HelmChartAction
@@ -62,7 +61,8 @@ func (h *Handler) applyHelmChart(del bool, version, namespace string) error {
 	} else {
 		act = mesherykube.INSTALL
 	}
-	return kClient.ApplyHelmChart(mesherykube.ApplyHelmChartConfig{
+
+	c := mesherykube.ApplyHelmChartConfig{
 		ChartLocation: mesherykube.HelmChartLocation{
 			Repository: repo,
 			Chart:      chart,
@@ -72,5 +72,41 @@ func (h *Handler) applyHelmChart(del bool, version, namespace string) error {
 		Action:          act,
 		CreateNamespace: true,
 		ReleaseName:     chart,
-	})
+	}
+
+	var wg sync.WaitGroup
+	var errs []error
+	var errMx sync.Mutex
+
+	for _, config := range kubeconfigs {
+		wg.Add(1)
+		go func(config string) {
+			defer wg.Done()
+			kClient, err := mesherykube.New([]byte(config))
+			if err != nil {
+				errMx.Lock()
+				errs = append(errs, ErrNilClient)
+				errMx.Unlock()
+				return
+			}
+
+			// Install Helm chart.
+			err = kClient.ApplyHelmChart(c)
+			if err != nil {
+				errMx.Lock()
+				errs = append(errs, err)
+				errMx.Unlock()
+				return
+			}
+
+		}(config)
+	}
+
+	wg.Wait()
+	if len(errs) == 0 {
+		return nil
+	}
+
+	mergedErrors := mergeErrors(errs)
+	return ErrApplyHelmChart(mergedErrors)
 }
